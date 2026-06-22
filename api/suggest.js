@@ -1,4 +1,6 @@
-// api/suggest.js — 키워드 자동추천 (서버사이드)
+// api/suggest.js — 키워드 자동추천
+export const maxDuration = 30;
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
 
@@ -8,16 +10,10 @@ export default async function handler(req, res) {
   const prompt = `네이버 블로그 SEO 전문가입니다.
 메인 키워드: "${keyword}"
 
-반드시 아래 JSON 형식으로만 응답하세요:
+JSON으로만 응답:
 {
   "subKeywords": ["연관키워드1","연관키워드2","연관키워드3","연관키워드4","연관키워드5"],
-  "directives": [
-    "이 키워드를 검색할 독자층 (나이대·상황) 대상으로 작성",
-    "도입부 첫 문장 방향 제시",
-    "본문에서 반드시 다뤄야 할 핵심 내용 포함",
-    "독자에게 실질적으로 도움 될 구체적 팁 제공",
-    "마무리에 핵심 요약 후 행동 유도 문장으로 마무리"
-  ],
+  "directives": ["독자층 대상 작성","도입부 방향","핵심내용 포함","구체적 팁 제공","마무리 방향"],
   "format": "review 또는 info 또는 list 또는 howto 또는 compare 중 1개"
 }`;
 
