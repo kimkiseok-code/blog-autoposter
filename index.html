@@ -668,7 +668,7 @@ function showSuggestBar(type) {
 function hideSuggestBar() { $('suggest-bar').style.display = 'none'; }
 
 // ══════════════════════════════════════════════════════════════
-// AI 글 생성 — 브라우저에서 Claude API 직접 호출 (Vercel 타임아웃 우회)
+// AI 글 생성 — Vercel(웹검색) 우선, 타임아웃 시 브라우저 직접 폴백
 // ══════════════════════════════════════════════════════════════
 async function generatePost() {
   const keyword = $('keyword').value.trim();
@@ -677,77 +677,50 @@ async function generatePost() {
 
   $('btn-generate').disabled = true;
   showProgress(true);
-  setStep(1); setProgress(15);
+  setStep(1); setProgress(10);
+
+  const reqBody = {
+    keyword, subKeywords,
+    arrowDirectives: $('arrow-directives').value.trim(),
+    format: selectedFormat,
+    tone: settings.tone || 'friendly',
+    guideline: settings.guideline || '',
+  };
+
+  let post = null;
 
   try {
-    setStep(2); setProgress(35);
+    setStep(2); setProgress(30);
 
-    const format = selectedFormat;
-    const formatMap = {
-      review:'실사용 후기/경험담', info:'정보글/노하우',
-      list:'리스트업/추천 정리', howto:'방법/따라하기', compare:'비교 분석'
-    };
-    const toneMap = {
-      friendly:'친근한 블로거 톤 (-요/-죠)', professional:'신뢰감 있는 전문가 톤',
-      informative:'정보전달 중심, 간결하게', storytelling:'스토리텔링, 자연스러운 서술', review:'솔직한 후기 톤'
-    };
-
-    const subKwLine = subKeywords.length > 0 ? `서브 키워드: ${subKeywords.join(', ')}` : '';
-    const arrowDirectives = $('arrow-directives').value.trim();
-    const arrowSection = arrowDirectives ? `\n[추가 지시문]\n${arrowDirectives}` : '';
-    const tone = settings.tone || 'friendly';
-
-    const prompt = `네이버 블로그 SEO 전문 블로거입니다. 아래 조건으로 포스팅을 작성하세요.
-
-메인 키워드: ${keyword}
-${subKwLine}
-글 형식: ${formatMap[format] || format}
-톤: ${toneMap[tone] || tone}
-목표 글자수: 1,200~1,500자 (간결하고 핵심만)
-${arrowSection}
-
-[제목] 25자 내외, 키워드 앞 배치, CTR 단어(후기·방법·추천·정리·비교) 포함
-[본문] 키워드 "${keyword}" 5회 자연스럽게, H2 소제목 3개, 문단 4줄 이내, 리스트 1개 이상
-[구조] 도입→[IMAGE_THUMBNAIL]→본론①→[IMAGE_BODY1]→본론②→[IMAGE_BODY2]→본론③→마무리
-[해시태그] 10~15개, AI 말투 금지, 자연스러운 블로거 문체
-${settings.guideline ? '[추가지침] ' + settings.guideline : ''}
-
-JSON으로만 응답 (다른 텍스트 없이):
-{"title":"25자내외제목","subTitle":"부제목","metaDescription":"요약","body":"HTML본문 (<h2><p><strong><ul><li> 사용, [IMAGE_THUMBNAIL][IMAGE_BODY1][IMAGE_BODY2] 포함)","hashtags":["태그1","태그2"],"imageThumbnailPrompt":"영문프롬프트","imageBody1Prompt":"영문프롬프트","imageBody2Prompt":"영문프롬프트"}`;
-
-    // Claude API 직접 호출 (브라우저에서)
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': settings.apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 3000,
-        messages: [{ role: 'user', content: prompt }]
-      })
-    });
-
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error?.message || `API 오류 ${r.status}`);
-
-    const text = data.content?.[0]?.text || '';
-    if (!text) throw new Error('응답이 비어있습니다');
-
-    const clean = text.replace(/```json\n?|```/g, '').trim();
-    const s = clean.indexOf('{'), e = clean.lastIndexOf('}');
-    if (s === -1) throw new Error('JSON 파싱 실패');
-    const post = JSON.parse(clean.slice(s, e + 1));
-
-    setStep(3); setProgress(80);
+    // 1차: Vercel 서버 API (웹 검색 포함)
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 55000);
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reqBody),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'API 오류');
+      post = data.post;
+      setStep(3); setProgress(85);
+    } catch (serverErr) {
+      // 2차 폴백: 브라우저 직접 (웹 검색 없음)
+      console.warn('서버 API 실패, 직접 호출 전환:', serverErr.message);
+      toast('직접 생성 모드로 전환 중...', '');
+      setStep(2); setProgress(40);
+      post = await generateDirect(reqBody);
+      setStep(3); setProgress(85);
+    }
 
     // 보관함 저장
     const record = {
       id: Date.now(), keyword, subKeywords,
-      arrowDirectives, post, published: false,
+      arrowDirectives: reqBody.arrowDirectives,
+      post, published: false,
       createdAt: new Date().toLocaleDateString('ko-KR')
     };
     posts.push(record);
@@ -757,7 +730,6 @@ JSON으로만 응답 (다른 텍스트 없이):
     setStep(4); setProgress(100);
     await delay(300);
     showProgress(false);
-
     showResult(post);
     imgAutoSet(post);
     renderPostList();
@@ -770,6 +742,41 @@ JSON으로만 응답 (다른 텍스트 없이):
   } finally {
     $('btn-generate').disabled = false;
   }
+}
+
+// 브라우저 직접 호출 폴백 (웹 검색 없음)
+async function generateDirect({ keyword, subKeywords, arrowDirectives, format, tone, guideline }) {
+  const formatMap = { review:'실사용 후기', info:'정보글', list:'리스트업', howto:'방법', compare:'비교 분석' };
+  const toneMap   = { friendly:'친근한 블로거', professional:'전문가', informative:'정보전달', storytelling:'스토리텔링', review:'솔직한 후기' };
+  const prompt = `네이버 블로그 SEO 전문 블로거입니다.
+메인 키워드: ${keyword}
+${subKeywords?.length ? '서브 키워드: '+subKeywords.join(', ') : ''}
+글 형식: ${formatMap[format]||format} / 톤: ${toneMap[tone]||tone} / 1,200~1,500자
+${arrowDirectives ? '[지시문]\n'+arrowDirectives : ''}
+${guideline ? '[지침] '+guideline : ''}
+[제목] 25자내외, 키워드 앞배치, CTR단어 포함
+[본문] 키워드 "${keyword}" 5회, H2 3개, 문단4줄이내, 리스트1개
+[구조] 도입→[IMAGE_THUMBNAIL]→본론①→[IMAGE_BODY1]→본론②→[IMAGE_BODY2]→본론③→마무리
+[해시태그] 10~15개
+JSON만 응답: {"title":"","subTitle":"","metaDescription":"","body":"HTML","hashtags":[],"imageThumbnailPrompt":"","imageBody1Prompt":"","imageBody2Prompt":""}`;
+
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': settings.apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({ model:'claude-sonnet-4-6', max_tokens:3000, messages:[{role:'user',content:prompt}] })
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error?.message || `API ${r.status}`);
+  const text = data.content?.[0]?.text || '';
+  const clean = text.replace(/```json\n?|```/g,'').trim();
+  const s=clean.indexOf('{'), e=clean.lastIndexOf('}');
+  if (s===-1) throw new Error('JSON 파싱 실패');
+  return JSON.parse(clean.slice(s,e+1));
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -813,7 +820,7 @@ function showResult(post) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// 네이버 발행 — 확장프로그램으로 메시지 전달
+// 네이버 발행 — storage 기반 데이터 전달
 // ══════════════════════════════════════════════════════════════
 async function postToNaver() {
   if (!currentPost?.post) { toast('먼저 글을 생성해주세요', 'error'); return; }
@@ -826,25 +833,25 @@ async function postToNaver() {
   const hashtags = (post.hashtags||[]).slice(0,15).map(t=>'#'+t.replace(/^#/,'')).join(' ');
   const fullBody = body + `<p>${hashtags}</p>`;
 
-  // 확장프로그램에 메시지 전달 (window.postMessage 방식)
+  // 1. window.postMessage로 확장프로그램 bridge에 전달
   window.postMessage({
     type: 'BAP_INSERT_TO_NAVER',
     naverId: settings.naverId || '',
     title:   post.title || '',
     body:    fullBody,
+    scheduleTime: null
   }, '*');
 
-  // 확장프로그램이 없으면 직접 탭 열기
+  // 2. 잠깐 대기 후 네이버 탭 열기
+  await delay(300);
   const naverId = settings.naverId;
-  if (naverId) {
-    window.open(`https://blog.naver.com/${naverId}/postwrite`, '_blank');
-  } else {
-    window.open('https://blog.naver.com/postwrite', '_blank');
-  }
+  const writeUrl = naverId
+    ? `https://blog.naver.com/${naverId}/postwrite`
+    : 'https://blog.naver.com/postwrite';
+  window.open(writeUrl, '_blank');
 
-  // 발행 상태 업데이트
   if (currentPost) { currentPost.published = true; savePosts(); renderPostList(); }
-  toast('네이버 글쓰기 탭을 열었습니다 ✓', 'success');
+  toast('네이버 글쓰기 탭을 열었습니다. 확장프로그램이 자동 입력합니다 ✓', 'success');
 }
 
 async function copyPost() {
